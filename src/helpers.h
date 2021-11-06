@@ -8,6 +8,8 @@
 
 /* Clamps x(value) between y(min) and z(max) in a nested ternary operation */
 #define LIGHT_CLAMP(val, min, max) (val < min ? light_log_clamp_min(min) : (val > max ? light_log_clamp_max(max) : val))
+/* Rounds val to an integer */
+#define LIGHT_ROUND(val) ((int) ((val) + .5))
 
 /* Verbosity levels: 
 * 0 - No output
@@ -46,6 +48,8 @@ bool light_file_read_uint64    (char const *filename, uint64_t *val);
 bool light_file_exists (char const *filename);
 bool light_file_is_writable (char const *filename);
 bool light_file_is_readable (char const *filename);
+
+uint64_t light_gcd(int a, int b);
 
 uint64_t light_log_clamp_min(uint64_t min);
 uint64_t light_log_clamp_max(uint64_t max);

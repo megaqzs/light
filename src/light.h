@@ -76,6 +76,7 @@ struct _light_context_t
         // Only one of value and raw_value is populated; which one depends on the command
         uint64_t                value; // The input value, in raw mode
         float                   float_value; // The input value as a float
+        double                  round_accuracy;
         bool                    raw_mode; // Whether or not we use raw or percentage mode
         light_device_target_t   *device_target; // The device target to act on
     } run_params;

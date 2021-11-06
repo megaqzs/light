@@ -10,8 +10,8 @@
 #include <stdlib.h> // malloc, free
 #include <string.h> // strstr
 #include <stdio.h>  // snprintf
-#include <unistd.h>	// geteuid
-#include <sys/types.h> // geteuid
+#include <unistd.h>    // geteuid
+#include <sys/types.h>	// geteuid
 #include <errno.h>
 #include <inttypes.h> // PRIu64
 
@@ -93,6 +93,32 @@ static void _light_get_target_file(light_context_t* ctx, char* output_path, size
             );
 }
 
+// find the best amount for doing round(raw_brightness / output) * output which will convert to a readable amount in percents when reapeatedliy adding values
+static double _light_get_best_accuracy(int max_brightness, light_context_t *ctx)
+{
+    double accuracy = ctx->run_params.round_accuracy;
+	if (accuracy == -1)
+		accuracy = 1.0f;
+	else if (accuracy == 0) {
+        accuracy = 1;
+        for (int i = max_brightness, max = 0; max != 100 && max < i; i--) {
+            int curr = light_gcd(100, i);
+            // the greatest common divisor could be seen as the number of times (a / b) * n completes to a natural number when 0 < n < a
+            // and we want a to be 100 so for exemple 100 / 200 completes to a whole number in this case 100 times.
+            // however gcd(100, 100) is equivilant because both 100 / 200 and 100 / 100 complete to 1 so in this case
+            // we want 200 because 100 / 200 is smaller then 100 / 100 which allows for more accuracy
+            if (curr > max) {
+                max = curr;
+                accuracy = max_brightness / (double) i; // 100 / i is the percent we want to round to,
+                // and (100 / i) / 100 * maximal_raw_brightness is that percent converted to a raw value 
+            }
+        }
+    }
+	else
+		accuracy = accuracy / 100 * max_brightness;
+    return accuracy;
+}
+
 static uint64_t _light_get_min_cap(light_context_t *ctx)
 {
     char target_path[NAME_MAX];
@@ -171,9 +197,7 @@ static bool _light_percent_to_raw(light_device_target_t *target, double inpercen
         return false;
     }
 
-    double max_value_d = (double)max_value;
-    double target_value_d = max_value_d * (light_percent_clamp(inpercent) / 100.0);
-    uint64_t target_value = LIGHT_CLAMP((uint64_t)target_value_d, 0, max_value);
+    uint64_t target_value = LIGHT_ROUND(light_percent_clamp(inpercent) / 100.0f * max_value);
     *outraw = target_value;
     
     return true;
@@ -191,6 +215,7 @@ static void _light_print_usage()
         
         "  -A          Increase brightness by value\n"
         "  -U          Decrease brightness by value\n" 
+        "  -a          set rounding accuracy to value\n"
         "  -T          Multiply brightness by value (can be a non-whole number, ignores raw mode)\n"
         "  -S          Set brightness to value\n"
         "  -G          Get brightness\n"
@@ -241,7 +266,7 @@ static bool _light_parse_arguments(light_context_t *ctx, int argc, char** argv)
     bool specified_target = false;
     snprintf(ctrl_name, sizeof(ctrl_name), "%s", "sysfs/backlight/auto");
     
-    while((curr_arg = getopt(argc, argv, "HhVGSLMNPAUTOIv:s:r")) != -1)
+    while((curr_arg = getopt(argc, argv, "HhVGSLMNPAUTOIa:v:s:r")) != -1)
     {
         switch(curr_arg)
         {
@@ -305,15 +330,30 @@ static bool _light_parse_arguments(light_context_t *ctx, int argc, char** argv)
                 _light_set_context_command(ctx, light_cmd_get_min_brightness);
                 need_target = true;
                 break;
+            case 'a':
+                if(sscanf(optarg, "%lf", &ctx->run_params.round_accuracy) != 1)
+                {
+                    fprintf(stderr, "-a argument is not a floating point number.\n\n");
+                    _light_print_usage();
+                    return false;
+                }
+                
+                if(ctx->run_params.round_accuracy < 0 || ctx->run_params.round_accuracy > 100)
+                {
+                    fprintf(stderr, "-a argument must be between 0 and 100.\n\n");
+                    _light_print_usage();
+                    return false;
+                }
+                break;
             case 'A':
                 _light_set_context_command(ctx, light_cmd_add_brightness);
                 need_target = true;
-                need_value = true;
+                need_float_value = true;
                 break;
             case 'U':
                 _light_set_context_command(ctx, light_cmd_sub_brightness);
                 need_target = true;
-                need_value = true;
+                need_float_value = true;
                 break;
             case 'T':
                 _light_set_context_command(ctx, light_cmd_mul_brightness);
@@ -429,6 +469,7 @@ light_context_t* light_initialize(int argc, char **argv)
     new_ctx->run_params.command = NULL;
     new_ctx->run_params.device_target = NULL;
     new_ctx->run_params.value = 0;
+	new_ctx->run_params.round_accuracy = -1;
     new_ctx->run_params.raw_mode = false;
 
     uid_t uid = getuid();
@@ -885,8 +926,14 @@ bool light_cmd_add_brightness(light_context_t *ctx)
         return false;
     }
     
-    value += ctx->run_params.value;
-    
+    if (ctx->run_params.raw_mode)
+        value += ctx->run_params.float_value;
+    else {
+        double accuracy = _light_get_best_accuracy(max_value, ctx);
+        double amount_to_increace = max_value * (light_percent_clamp(ctx->run_params.float_value) / 100.0);
+        value = LIGHT_ROUND(accuracy * LIGHT_ROUND(value / accuracy) + amount_to_increace);
+    }
+
     uint64_t mincap = _light_get_min_cap(ctx);
     if(mincap > value)
     {
@@ -924,9 +971,22 @@ bool light_cmd_sub_brightness(light_context_t *ctx)
         return false;
     }
     
-    if(value > ctx->run_params.value)
+    uint64_t max_value = 0;
+    if(!target->get_max_value(target, &max_value))
     {
-        value -= ctx->run_params.value;
+        LIGHT_ERR("failed to read from target");
+        return false;
+    }
+
+    if(value >= ctx->run_params.value)
+    {
+        if (ctx->run_params.raw_mode)
+            value = LIGHT_ROUND(value - ctx->run_params.float_value);
+        else {
+            double accuracy = _light_get_best_accuracy(max_value, ctx);
+            double amount_to_decreace = max_value * (light_percent_clamp(ctx->run_params.float_value) / 100.0);
+            value = LIGHT_ROUND(accuracy * LIGHT_ROUND(value / accuracy) - amount_to_decreace);
+        }
     }
     else 
     {

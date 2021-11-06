@@ -108,6 +108,20 @@ uint64_t light_log_clamp_max(uint64_t max)
     return max;
 }
 
+// returns the output of the euclidean implementation of gcd
+uint64_t light_gcd(int a, int b)
+{
+    while (a != 0) {
+        b %= a;
+
+		// swap a and b
+        b ^= a;
+        a ^= b;
+        b ^= a;
+    }
+    return b;
+}
+
 /* Clamps the `percent` value between 0% and 100% */
 double light_percent_clamp(double val)
 {
