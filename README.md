@@ -113,6 +113,10 @@ The latest stable release is available in official repos, install with:
 
     pacman -S light
 
+Make sure you add yourself to the video group as well to get proper usage permissions:
+
+    usermod -aG video <user>
+
 Additionally, the latest development branch (master) is available on AUR: [light-git][]
 
 ### Fedora
